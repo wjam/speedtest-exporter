@@ -1,0 +1,41 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    cooldown: # Give dependency updates time to be reviewed by various security companies
+      default-days: 7
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      minor-update:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "docker"
+    cooldown: # Give dependency updates time to be reviewed by various security companies
+      default-days: 7
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      minor-update:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "gomod"
+    cooldown: # Give dependency updates time to be reviewed by various security companies
+      default-days: 7
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      minor-update:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
