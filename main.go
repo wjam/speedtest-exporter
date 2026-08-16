@@ -1,64 +1,69 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/alecthomas/kingpin"
-	"github.com/caarlos0/speedtest-exporter/collector"
-	"github.com/patrickmn/go-cache"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-)
-
-// nolint: gochecknoglobals
-var (
-	bind         = kingpin.Flag("bind", "addr to bind the server").Short('b').Default(":9876").String()
-	debug        = kingpin.Flag("debug", "show debug logs").Default("false").Bool()
-	format       = kingpin.Flag("logFormat", "log format to use").Default("console").Enum("json", "console")
-	interval     = kingpin.Flag("refresh.interval", "time between refreshes with speedtest").Default("30m").Duration()
-	server       = kingpin.Flag("server", "speedtest server id").Short('s').Default("").String()
-	serverLabels = kingpin.Flag("showServerLabels", "whether or not to annotate speedtest results with details of the server").Default("false").Bool()
-
-	version = "master"
+	"github.com/wjam/speedtest-exporter/internal"
 )
 
 func main() {
-	kingpin.Version("speedtest-exporter version " + version)
-	kingpin.HelpFlag.Short('h')
-	kingpin.Parse()
+	// Reminder: `defer` doesn't behave as expected in functions with log.Fatal, os.Exit, etc.
+	rootCtx := context.Background()
 
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	if *format == "console" {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	var debug bool
+	flag.BoolVar(&debug, "debug", false, "show debug logs")
+
+	var interval time.Duration
+	flag.DurationVar(&interval, "refresh.interval", 30*time.Minute, "time between refreshes with speedtest")
+
+	var bind string
+	flag.StringVar(&bind, "bind", ":9876", "addr to bind the server")
+
+	var server string
+	flag.StringVar(&server, "server", "", "speedtest server id")
+
+	flag.Parse()
+
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
 	}
-	if *debug {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-		log.Debug().Msg("enabled debug mode")
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
+	app := app(server, interval)
+
+	if err := runApp(rootCtx, bind, app); err != nil {
+		slog.ErrorContext(rootCtx, "failed to run app", "error", err)
+		os.Exit(1)
 	}
+}
 
-	if *server != "" {
-		log.Info().Msgf("starting speedtest-exporter %s with server %s", version, *server)
-	} else {
-		log.Info().Msgf("starting speedtest-exporter %s", version)
-	}
-	prometheus.MustRegister(
-		collector.NewSpeedtestCollectorWithOpts(
-			cache.New(*interval, *interval),
-			collector.SpeedtestOpts{
-				Server:           *server,
-				ShowServerLabels: *serverLabels,
-			},
-		),
-	)
+var (
+	signals            = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
+	shutdownPeriod     = 15 * time.Second
+	shutdownHardPeriod = 3 * time.Second
+	timeSleep          = time.Sleep
+)
 
-	http.Handle("/metrics", promhttp.Handler())
+func app(server string, interval time.Duration) http.Handler {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(internal.NewSpeedtestCollectorWithOpts(interval, server))
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(
 			w, `
 			<html>
 			<head><title>Speedtest Exporter</title></head>
@@ -70,8 +75,56 @@ func main() {
 			`,
 		)
 	})
-	log.Info().Msgf("listening on %s", *bind)
-	if err := http.ListenAndServe(*bind, nil); err != nil {
-		log.Fatal().Err(err).Msg("error starting server")
+	mux.Handle("GET /metrics", promhttp.InstrumentMetricHandler(reg, promhttp.HandlerFor(reg, promhttp.HandlerOpts{})))
+	return mux
+}
+
+func runApp(ctx context.Context, addr string, handler http.Handler) error {
+	rootCtx, cancelRoot := signal.NotifyContext(ctx, signals...)
+	defer cancelRoot()
+
+	// In-flight requests get a context that won't be immediately cancelled on SIGINT/SIGTERM
+	// so that they can be gracefully stopped.
+	ongoingCtx, cancelOngoing := context.WithCancel(context.WithoutCancel(rootCtx))
+	server := &http.Server{
+		Addr: addr,
+		BaseContext: func(_ net.Listener) context.Context {
+			return ongoingCtx
+		},
+		Handler:           handler,
+		ReadHeaderTimeout: 3 * time.Second,
 	}
+
+	errCh := make(chan error)
+	go func() {
+		defer close(errCh)
+		slog.InfoContext(rootCtx, "Server listening", "addr", addr)
+		if err := server.ListenAndServe(); err != nil {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case <-rootCtx.Done():
+		slog.InfoContext(rootCtx, "Received shutdown signal, shutting down")
+	case err := <-errCh:
+		if !errors.Is(err, http.ErrServerClosed) {
+			cancelOngoing()
+			return err
+		}
+	}
+
+	slog.InfoContext(rootCtx, "Waiting for ongoing requests to finish")
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.WithoutCancel(rootCtx), shutdownPeriod)
+	defer cancelShutdown()
+	err := server.Shutdown(shutdownCtx)
+	cancelOngoing()
+	if err != nil {
+		slog.ErrorContext(rootCtx, "Failed to wait for ongoing requests to finish, waiting for forced cancellation")
+		timeSleep(shutdownHardPeriod)
+	}
+
+	slog.InfoContext(rootCtx, "Server shut down")
+	return err
 }

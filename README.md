@@ -1,55 +1,22 @@
 # speedtest-exporter
 
-Exports [Speedtest CLI](https://www.speedtest.net/apps/cli) metrics in the prometheus format, caching the results.
+Exports [Speedtest CLI](https://www.speedtest.net/apps/cli) metrics in the Prometheus format, caching the results.
 
-<img width="2218" alt="image" src="https://user-images.githubusercontent.com/245435/113709484-e8deda80-96b8-11eb-846f-478b27395ec5.png">
+![Grafana dashboard](./docs/dashboard.png)
 
+This fork encompasses the follow design changes from upstream:
+
+- Use fewer dependencies to help minimise binary size
+- Automated testing to verify behaviour
+- Only support running using container images rather than apt, yum, etc.
+- Remove support for including server labels in metrics as that'd contain too much entropy for a Prometheus metric
 
 ## Links
 
 - [Grafana Dashboard](https://grafana.com/grafana/dashboards/14187)
-- [Installing speedtest CLI](https://www.speedtest.net/apps/cli)
 
-
-## Install
-
-**homebrew**:
+## Running
 
 ```sh
-brew install caarlos0/tap/speedtest-exporter
+docker run --rm -p 9876:9876 wjam/speedtest-exporter
 ```
-
-**docker**:
-
-```sh
-docker run --rm -p 9876:9876 caarlos0/speedtest-exporter
-```
-
-**apt**:
-
-```sh
-echo 'deb [trusted=yes] https://repo.caarlos0.dev/apt/ /' | sudo tee /etc/apt/sources.list.d/caarlos0.list
-sudo apt update
-sudo apt install speedtest-exporter
-```
-
-**yum**:
-
-```sh
-echo '[caarlos0]
-name=caarlos0
-baseurl=https://repo.caarlos0.dev/yum/
-enabled=1
-gpgcheck=0' | sudo tee /etc/yum.repos.d/caarlos0.repo
-sudo yum install speedtest-exporter
-```
-
-**deb/rpm/apk**:
-
-Download the `.apk`, `.deb` or `.rpm` from the [releases page][releases] and install with the appropriate commands.
-
-**manually**:
-
-Download the pre-compiled binaries from the [releases page][releases] or clone the repo build from source.
-
-[releases]: https://github.com/caarlos0/speedtest-exporter/releases
