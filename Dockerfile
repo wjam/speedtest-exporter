@@ -4,7 +4,7 @@ WORKDIR /
 
 RUN wget -O /tmp/speedtest.tgz "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-$(apk info --print-arch).tgz" && tar xvfz /tmp/speedtest.tgz speedtest
 
-FROM golang:1.26-alpine3.24 AS builder
+FROM golang:1.27-alpine3.24 AS builder
 
 WORKDIR /src
 COPY go.mod .
